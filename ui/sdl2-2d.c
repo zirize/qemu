@@ -28,6 +28,151 @@
 #include "ui/input.h"
 #include "ui/sdl2.h"
 
+static DisplayScaler sdl2_2d_scaler(struct sdl2_console *scon)
+{
+    if (scon->opts->has_scaler) {
+        return scon->opts->scaler;
+    }
+    return DISPLAY_SCALER_LINEAR;
+}
+
+/*
+ * Draw the guest texture into the window.
+ *
+ * SDL_RenderSetLogicalSize() already letterboxes the guest and scales it to
+ * the window, so @linear and @nearest only differ in the filter set on the
+ * texture. @integer and @integerplus need the destination rectangle worked
+ * out by hand, because SDL would otherwise use the largest fractional scale
+ * that fits.
+ */
+static void sdl2_2d_present(struct sdl2_console *scon)
+{
+    DisplayScaler scaler = sdl2_2d_scaler(scon);
+    int fbw = surface_width(scon->surface);
+    int fbh = surface_height(scon->surface);
+    int ww, wh, mult, tw, th;
+    SDL_Rect dst;
+
+    /*
+     * How far the window may fall short of a whole multiple and still be
+     * treated as one. A fractional-scale compositor rounds to whole physical
+     * pixels, which costs at most a pixel here.
+     */
+    const int SCALER_SNAP = 2;
+
+    SDL_RenderClear(scon->real_renderer);
+
+    if (scaler == DISPLAY_SCALER_LINEAR || scaler == DISPLAY_SCALER_NEAREST) {
+        SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+        SDL_RenderPresent(scon->real_renderer);
+        return;
+    }
+
+    /*
+     * The logical size makes SDL letterbox for us, which is the opposite of
+     * what is wanted here: the destination rectangle has to be computed in
+     * real output pixels.
+     */
+    SDL_RenderSetLogicalSize(scon->real_renderer, 0, 0);
+    if (SDL_GetRendererOutputSize(scon->real_renderer, &ww, &wh) != 0) {
+        SDL_GetWindowSize(scon->real_window, &ww, &wh);
+    }
+
+    /*
+     * A compositor running at a fractional scale rounds the window to whole
+     * physical pixels, so a window sized to be exactly N times the guest can
+     * come back a pixel short. Flooring there would drop a whole step - 2x
+     * would become 1x and half the window would turn into border - so let
+     * the multiple round up across that last pixel or two.
+     */
+    mult = MIN((ww + SCALER_SNAP) / fbw, (wh + SCALER_SNAP) / fbh);
+    if (mult < 1) {
+        /* Window smaller than the guest: fall back to fitting it. */
+        mult = 1;
+    }
+    tw = fbw * mult;
+    th = fbh * mult;
+
+    if (scaler == DISPLAY_SCALER_INTEGER) {
+        dst.w = tw;
+        dst.h = th;
+        dst.x = (ww - dst.w) / 2;
+        dst.y = (wh - dst.h) / 2;
+        SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, &dst);
+        SDL_RenderPresent(scon->real_renderer);
+        return;
+    }
+
+    /*
+     * integerplus: blow the guest up by @mult with no interpolation first,
+     * then stretch that to the window with a bilinear filter. Scaling up
+     * before filtering keeps the pixel edges of the guest mostly intact, so
+     * the result stays sharper than a plain bilinear stretch while still
+     * filling the window.
+     */
+    {
+        int fit;
+
+        /* Where the guest would land if stretched to fill the window. */
+        if ((int64_t)ww * fbh < (int64_t)wh * fbw) {
+            fit = ww;
+            dst.w = fit;
+            dst.h = fbh * fit / fbw;
+        } else {
+            fit = wh;
+            dst.h = fit;
+            dst.w = fbw * fit / fbh;
+        }
+
+        /*
+         * If that is already the whole multiple, give or take the pixel the
+         * compositor rounded away, the second pass would only resample by a
+         * pixel - all blur, no gain. Draw the integer scale instead.
+         */
+        if (ABS(dst.w - tw) <= SCALER_SNAP && ABS(dst.h - th) <= SCALER_SNAP) {
+            dst.w = tw;
+            dst.h = th;
+            dst.x = (ww - dst.w) / 2;
+            dst.y = (wh - dst.h) / 2;
+            SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, &dst);
+            SDL_RenderPresent(scon->real_renderer);
+            return;
+        }
+
+        if (!scon->scaler_target ||
+            scon->scaler_target_w != tw || scon->scaler_target_h != th) {
+            if (scon->scaler_target) {
+                SDL_DestroyTexture(scon->scaler_target);
+            }
+            scon->scaler_target =
+                SDL_CreateTexture(scon->real_renderer,
+                                  SDL_PIXELFORMAT_ARGB8888,
+                                  SDL_TEXTUREACCESS_TARGET, tw, th);
+            scon->scaler_target_w = tw;
+            scon->scaler_target_h = th;
+        }
+
+        if (scon->scaler_target) {
+            SDL_SetTextureScaleMode(scon->scaler_target, SDL_ScaleModeLinear);
+            SDL_SetRenderTarget(scon->real_renderer, scon->scaler_target);
+            SDL_RenderClear(scon->real_renderer);
+            SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+            SDL_SetRenderTarget(scon->real_renderer, NULL);
+            SDL_RenderClear(scon->real_renderer);
+        }
+
+        dst.x = (ww - dst.w) / 2;
+        dst.y = (wh - dst.h) / 2;
+
+        SDL_RenderCopy(scon->real_renderer,
+                       scon->scaler_target ? scon->scaler_target
+                                           : scon->texture,
+                       NULL, &dst);
+    }
+
+    SDL_RenderPresent(scon->real_renderer);
+}
+
 void sdl2_2d_update(DisplayChangeListener *dcl,
                     int x, int y, int w, int h)
 {
@@ -51,9 +196,7 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
     SDL_UpdateTexture(scon->texture, &rect,
                       surface_data(surf) + surface_data_offset,
                       surface_stride(surf));
-    SDL_RenderClear(scon->real_renderer);
-    SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
-    SDL_RenderPresent(scon->real_renderer);
+    sdl2_2d_present(scon);
 }
 
 void sdl2_2d_switch(DisplayChangeListener *dcl,
@@ -121,6 +264,21 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
                                       SDL_TEXTUREACCESS_STREAMING,
                                       surface_width(new_surface),
                                       surface_height(new_surface));
+    /*
+     * Set the filter on the texture itself rather than relying on
+     * SDL_HINT_RENDER_SCALE_QUALITY, which the embedder may have set to
+     * something else before SDL was initialised.
+     */
+    SDL_SetTextureScaleMode(scon->texture,
+                            sdl2_2d_scaler(scon) == DISPLAY_SCALER_LINEAR
+                            ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+
+    /* The guest resolution changed, so any intermediate target is stale. */
+    if (scon->scaler_target) {
+        SDL_DestroyTexture(scon->scaler_target);
+        scon->scaler_target = NULL;
+        scon->scaler_target_w = scon->scaler_target_h = 0;
+    }
     sdl2_2d_redraw(scon);
 }
 

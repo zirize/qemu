@@ -1388,6 +1388,31 @@
                 '*audiodev': 'str' } }
 
 ##
+# @DisplayScaler:
+#
+# Filter used when the guest display is scaled to the window.
+#
+# @linear: Bilinear interpolation.  Smooth, but blurs the
+#     sharp edges of a low resolution guest.
+#
+# @nearest: Nearest neighbour.  Keeps edges sharp, but the
+#     window is rarely an exact multiple of the guest size,
+#     so some guest pixels end up wider than others.
+#
+# @integer: Nearest neighbour at the largest integer multiple
+#     that fits, leaving black borders.  Every guest pixel
+#     comes out the same size.
+#
+# @integerplus: Nearest neighbour at an integer multiple,
+#     then bilinear the rest of the way to fill the window.
+#     Keeps most of the sharpness of @integer, no borders.
+#
+# Since: 10.2
+##
+{ 'enum'    : 'DisplayScaler',
+  'data'    : [ 'linear', 'nearest', 'integer', 'integerplus' ] }
+
+##
 # @DisplayGLMode:
 #
 # Display OpenGL mode.
@@ -1547,6 +1572,9 @@
 #
 # @gl: Enable OpenGL support (default: off).
 #
+# @scaler: Filter used when scaling the guest display to the window
+#     (default: linear).  (since: 10.2)
+#
 # Since: 2.12
 ##
 { 'union'   : 'DisplayOptions',
@@ -1554,7 +1582,8 @@
                 '*full-screen'   : 'bool',
                 '*window-close'  : 'bool',
                 '*show-cursor'   : 'bool',
-                '*gl'            : 'DisplayGLMode' },
+                '*gl'            : 'DisplayGLMode',
+                '*scaler'        : 'DisplayScaler' },
   'discriminator' : 'type',
   'data'    : {
       'gtk': { 'type': 'DisplayGTK', 'if': 'CONFIG_GTK' },
