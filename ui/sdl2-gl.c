@@ -53,7 +53,15 @@ static void sdl2_gl_render_surface(struct sdl2_console *scon)
     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
     sdl2_set_scanout_mode(scon, false);
 
-    SDL_GetWindowSize(scon->real_window, &ww, &wh);
+    /*
+     * The GL framebuffer is the size of the drawable, which is not the size
+     * of the window once the window has been created with ALLOW_HIGHDPI and
+     * the output runs at a scale other than one. Asking for the window size
+     * here would leave the viewport covering only part of the framebuffer,
+     * and since GL counts from the bottom left that is where the guest would
+     * end up.
+     */
+    SDL_GL_GetDrawableSize(scon->real_window, &ww, &wh);
     surface_gl_setup_viewport(scon->gls, scon->surface, ww, wh);
 
     surface_gl_render_texture(scon->gls, scon->surface);
@@ -240,7 +248,7 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
 
     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
 
-    SDL_GetWindowSize(scon->real_window, &ww, &wh);
+    SDL_GL_GetDrawableSize(scon->real_window, &ww, &wh);
     egl_fb_setup_default(&scon->win_fb, ww, wh, 0, 0);
     egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
 

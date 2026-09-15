@@ -90,6 +90,13 @@ void sdl2_window_create(struct sdl2_console *scon)
     } else {
         flags |= SDL_WINDOW_RESIZABLE;
     }
+    /*
+     * Render at the output's real pixel density. Without this the window is
+     * only ever drawn at its logical size, and a compositor running at a
+     * fractional scale resamples the result to physical pixels with its own
+     * (bilinear) filter, undoing whatever scaling mode was picked here.
+     */
+    flags |= SDL_WINDOW_ALLOW_HIGHDPI;
     if (scon->hidden) {
         flags |= SDL_WINDOW_HIDDEN;
     }
