@@ -129,8 +129,8 @@ struct GtkDisplayState {
     GtkWidget *notebook;
     int button_mask;
     gboolean last_set;
-    int last_x;
-    int last_y;
+    double last_x;
+    double last_y;
     int grab_x_root;
     int grab_y_root;
     VirtualConsole *kbd_owner;
