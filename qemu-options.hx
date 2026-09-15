@@ -2253,11 +2253,13 @@ DEF("display", HAS_ARG, QEMU_OPTION_display,
 #if defined(CONFIG_SDL)
     "-display sdl[,gl=on|core|es|off][,grab-mod=<mod>][,show-cursor=on|off]\n"
     "            [,window-close=on|off]\n"
+    "            [,scaler=linear|nearest|integer|integerplus]\n"
 #endif
 #if defined(CONFIG_GTK)
     "-display gtk[,clipboard=on|off][,full-screen=on|off][,gl=on|off]\n"
     "            [,grab-on-hover=on|off][,show-tabs=on|off][,show-cursor=on|off]\n"
     "            [,window-close=on|off][,show-menubar=on|off][,zoom-to-fit=on|off]\n"
+    "            [,scaler=linear|nearest|integer|integerplus]\n"
 #endif
 #if defined(CONFIG_VNC)
     "-display vnc=<display>[,<optargs>]\n"
@@ -2335,6 +2337,14 @@ SRST
         ``show-cursor=on|off`` :  Force showing the mouse cursor
 
         ``window-close=on|off`` : Allow to quit qemu with window close button
+
+        ``scaler=linear|nearest|integer|integerplus`` : Filter used when
+        the guest display is scaled to the window. ``linear`` (the default)
+        is smooth but blurry; ``nearest`` keeps edges sharp at the cost of
+        unevenly sized guest pixels; ``integer`` scales by a whole number
+        only and letterboxes the rest; ``integerplus`` scales by a whole
+        number first and then stretches the remainder, filling the window
+        while staying sharper than ``linear``.
 
     ``gtk``
         Display video output in a GTK window. This interface provides

@@ -32,6 +32,9 @@ struct sdl2_console {
     DisplaySurface *surface;
     DisplayOptions *opts;
     SDL_Texture *texture;
+    /* intermediate render target used by DISPLAY_SCALER_INTEGERPLUS */
+    SDL_Texture *scaler_target;
+    int scaler_target_w, scaler_target_h;
     SDL_Window *real_window;
     SDL_Renderer *real_renderer;
     int idx;
