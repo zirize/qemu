@@ -1789,7 +1789,7 @@ static void gd_menu_zoom_fit(GtkMenuItem *item, void *opaque)
     gd_update_full_redraw(vc);
 }
 
-static void gd_grab_update(VirtualConsole *vc, bool kbd, bool ptr)
+static bool gd_grab_update(VirtualConsole *vc, bool kbd, bool ptr)
 {
     GdkDisplay *display = gtk_widget_get_display(vc->gfx.drawing_area);
     GdkSeat *seat = gdk_display_get_default_seat(display);
@@ -1806,11 +1806,12 @@ static void gd_grab_update(VirtualConsole *vc, bool kbd, bool ptr)
     }
 
     if (caps) {
-        gdk_seat_grab(seat, window, caps, false, cursor,
-                      NULL, NULL, NULL);
-    } else {
-        gdk_seat_ungrab(seat);
+        return gdk_seat_grab(seat, window, caps, false, cursor,
+                             NULL, NULL, NULL) == GDK_GRAB_SUCCESS;
     }
+
+    gdk_seat_ungrab(seat);
+    return true;
 }
 
 static void gd_grab_keyboard(VirtualConsole *vc, const char *reason)
@@ -1857,7 +1858,15 @@ static void gd_grab_pointer(VirtualConsole *vc, const char *reason)
         }
     }
 
-    gd_grab_update(vc, vc->s->kbd_owner == vc, true);
+    if (!gd_grab_update(vc, vc->s->kbd_owner == vc, true)) {
+        /*
+         * Without a grab the pointer keeps moving over other windows while
+         * the guest is fed relative motion, leaving the two cursors at
+         * unrelated positions. Better to stay ungrabbed than to pretend.
+         */
+        trace_gd_grab(vc->label, "ptr", "failed");
+        return;
+    }
     gdk_device_get_position(gd_get_pointer(display),
                             NULL, &vc->s->grab_x_root, &vc->s->grab_y_root);
     vc->s->ptr_owner = vc;
