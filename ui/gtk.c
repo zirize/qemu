@@ -997,6 +997,7 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
     VirtualConsole *vc = opaque;
     GtkDisplayState *s = vc->s;
     int fbx, fby;
+    double fbx_exact, fby_exact;
     int wx_offset, wy_offset;
     int wh_surface, ww_surface;
     int ww_widget, wh_widget;
@@ -1028,8 +1029,10 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
      * `motion` is reported in `widget` coordinates
      * so translating it to the coordinates in `vc`.
      */
-    fbx = (motion->x - wx_offset) / vc->gfx.scale_x;
-    fby = (motion->y - wy_offset) / vc->gfx.scale_y;
+    fbx_exact = (motion->x - wx_offset) / vc->gfx.scale_x;
+    fby_exact = (motion->y - wy_offset) / vc->gfx.scale_y;
+    fbx = fbx_exact;
+    fby = fby_exact;
 
     trace_gd_motion_event(ww_widget, wh_widget,
                           gtk_widget_get_scale_factor(widget), fbx, fby);
@@ -1045,13 +1048,32 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
         qemu_input_queue_abs(vc->gfx.dcl.con, INPUT_AXIS_Y, fby,
                              0, surface_height(vc->gfx.ds));
         qemu_input_event_sync();
+        s->last_x = fbx_exact;
+        s->last_y = fby_exact;
     } else if (s->last_set && s->ptr_owner == vc) {
-        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, fbx - s->last_x);
-        qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, fby - s->last_y);
-        qemu_input_event_sync();
+        /*
+         * The guest-relative delta is `motion` scaled down by scale_x/scale_y.
+         * When the window is enlarged (scale > 1) a single host pixel is worth
+         * less than one guest pixel, so truncating the delta to an integer
+         * would throw the fraction away on every event: slow movements would
+         * produce no motion at all and fast ones would fall short, with the
+         * error accumulating as the pointer moves. Report the whole part and
+         * carry the remainder over to the next event instead.
+         */
+        int rel_x = fbx_exact - s->last_x;
+        int rel_y = fby_exact - s->last_y;
+
+        if (rel_x != 0 || rel_y != 0) {
+            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_X, rel_x);
+            qemu_input_queue_rel(vc->gfx.dcl.con, INPUT_AXIS_Y, rel_y);
+            qemu_input_event_sync();
+        }
+        s->last_x += rel_x;
+        s->last_y += rel_y;
+    } else {
+        s->last_x = fbx_exact;
+        s->last_y = fby_exact;
     }
-    s->last_x = fbx;
-    s->last_y = fby;
     s->last_set = TRUE;
 
     if (!qemu_input_is_absolute(vc->gfx.dcl.con) && s->ptr_owner == vc) {
