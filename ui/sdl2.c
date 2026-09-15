@@ -520,8 +520,16 @@ static void handle_mousemotion(SDL_Event *ev)
     surf_h = surface_height(scon->surface);
     x = (int64_t)ev->motion.x * surf_w / scr_w;
     y = (int64_t)ev->motion.y * surf_h / scr_h;
-    dx = (int64_t)ev->motion.xrel * surf_w / scr_w;
-    dy = (int64_t)ev->motion.yrel * surf_h / scr_h;
+
+    /*
+     * The position above is a point on the screen and has to be expressed in
+     * the guest's pixels, but relative motion is not: it is what the mouse
+     * reports, and a mouse knows nothing about the resolution the guest is
+     * in. Pass it through and leave it to the guest to turn it into cursor
+     * movement, the way it would on hardware.
+     */
+    dx = ev->motion.xrel;
+    dy = ev->motion.yrel;
     if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
         sdl_send_mouse_event(scon, dx, dy, x, y, ev->motion.state);
     }
