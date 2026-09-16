@@ -94,6 +94,10 @@ struct PS2MouseState {
     int mouse_dz;
     int mouse_dw;
     uint8_t mouse_buttons;
+    /* rate limiting of the packet stream, see ps2_mouse_sync() */
+    QEMUTimer *mouse_timer;
+    int64_t mouse_next_packet_ns;
+    bool mouse_pending_flush;
 };
 
 #define TYPE_PS2_MOUSE_DEVICE "ps2-mouse"

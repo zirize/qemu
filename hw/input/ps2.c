@@ -24,6 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/timer.h"
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/input/ps2.h"
@@ -832,6 +833,7 @@ static void ps2_mouse_event(DeviceState *dev, QemuConsole *src,
         } else {
             s->mouse_buttons &= ~bmap[evt->btn.button];
         }
+        s->mouse_pending_flush = true;
         break;
 
     default:
@@ -840,9 +842,87 @@ static void ps2_mouse_event(DeviceState *dev, QemuConsole *src,
     }
 }
 
+static bool ps2_mouse_has_deltas(PS2MouseState *s)
+{
+    return s->mouse_dx || s->mouse_dy || s->mouse_dz || s->mouse_dw;
+}
+
+/*
+ * The guest selects how often it wants to be sampled with AUX_SET_SAMPLE and
+ * expects one packet per sample. Host pointing devices report much more often
+ * than that - 1000Hz is common - and a guest that derives the pointer speed
+ * from the counts in a single packet, as Windows does for "enhance pointer
+ * precision", then only ever sees the one or two counts a 1000Hz mouse moves
+ * between reports and keeps the pointer at the bottom of its acceleration
+ * curve. Return the interval the guest asked for so that the motion can be
+ * accumulated and released at that rate instead.
+ */
+static int64_t ps2_mouse_packet_period_ns(PS2MouseState *s)
+{
+    uint8_t rate = s->mouse_sample_rate;
+
+    /*
+     * A rate of zero means the guest has not asked for one yet; keep passing
+     * every host event straight through until it does.
+     */
+    if (rate == 0) {
+        return 0;
+    }
+    /* 200 samples per second is the most a PS/2 mouse supports */
+    if (rate > 200) {
+        rate = 200;
+    }
+
+    return NANOSECONDS_PER_SECOND / rate;
+}
+
+/* send the accumulated motion, in several packets if the deltas are too big */
+static void ps2_mouse_send_deltas(PS2MouseState *s, int64_t now, int64_t period)
+{
+    s->mouse_pending_flush = false;
+    s->mouse_next_packet_ns = now + period;
+
+    while (ps2_mouse_send_packet(s)) {
+        if (!ps2_mouse_has_deltas(s)) {
+            break;
+        }
+    }
+
+    /* the queue may have been full, come back for the rest */
+    if (period && ps2_mouse_has_deltas(s)) {
+        timer_mod_ns(s->mouse_timer, s->mouse_next_packet_ns);
+    } else {
+        timer_del(s->mouse_timer);
+    }
+}
+
+static void ps2_mouse_timer(void *opaque)
+{
+    PS2MouseState *s = opaque;
+
+    if (!(s->mouse_status & MOUSE_STATUS_ENABLED) ||
+        (s->mouse_status & MOUSE_STATUS_REMOTE)) {
+        return;
+    }
+
+    ps2_mouse_send_deltas(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                          ps2_mouse_packet_period_ns(s));
+}
+
+/* stop rate limiting, the next packet goes out as soon as there is one */
+static void ps2_mouse_reset_rate_limit(PS2MouseState *s)
+{
+    s->mouse_next_packet_ns = 0;
+    s->mouse_pending_flush = false;
+    if (s->mouse_timer) {
+        timer_del(s->mouse_timer);
+    }
+}
+
 static void ps2_mouse_sync(DeviceState *dev)
 {
     PS2MouseState *s = (PS2MouseState *)dev;
+    int64_t period, now;
 
     /* do not sync while disabled to prevent stream corruption */
     if (!(s->mouse_status & MOUSE_STATUS_ENABLED)) {
@@ -852,17 +932,24 @@ static void ps2_mouse_sync(DeviceState *dev)
     if (s->mouse_buttons) {
         qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
     }
-    if (!(s->mouse_status & MOUSE_STATUS_REMOTE)) {
-        /*
-         * if not remote, send event. Multiple events are sent if
-         * too big deltas
-         */
-        while (ps2_mouse_send_packet(s)) {
-            if (s->mouse_dx == 0 && s->mouse_dy == 0
-                    && s->mouse_dz == 0 && s->mouse_dw == 0) {
-                break;
-            }
-        }
+
+    /* in remote mode the guest collects the deltas itself with AUX_POLL */
+    if (s->mouse_status & MOUSE_STATUS_REMOTE) {
+        return;
+    }
+
+    period = ps2_mouse_packet_period_ns(s);
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    /*
+     * Button changes and packets that carry no motion are not worth delaying,
+     * and without a sample rate there is nothing to rate limit to.
+     */
+    if (period == 0 || s->mouse_pending_flush || !ps2_mouse_has_deltas(s) ||
+        now >= s->mouse_next_packet_ns) {
+        ps2_mouse_send_deltas(s, now, period);
+    } else {
+        timer_mod_ns(s->mouse_timer, s->mouse_next_packet_ns);
     }
 }
 
@@ -870,6 +957,7 @@ void ps2_mouse_fake_event(PS2MouseState *s)
 {
     trace_ps2_mouse_fake_event(s);
     s->mouse_dx++;
+    s->mouse_pending_flush = true;
     ps2_mouse_sync(DEVICE(s));
 }
 
@@ -911,6 +999,7 @@ void ps2_write_mouse(PS2MouseState *s, int val)
             break;
         case AUX_SET_REMOTE:
             s->mouse_status |= MOUSE_STATUS_REMOTE;
+            ps2_mouse_reset_rate_limit(s);
             ps2_queue(ps2, AUX_ACK);
             break;
         case AUX_GET_TYPE:
@@ -940,12 +1029,14 @@ void ps2_write_mouse(PS2MouseState *s, int val)
             break;
         case AUX_DISABLE_DEV:
             s->mouse_status &= ~MOUSE_STATUS_ENABLED;
+            ps2_mouse_reset_rate_limit(s);
             ps2_queue(ps2, AUX_ACK);
             break;
         case AUX_SET_DEFAULT:
             s->mouse_sample_rate = 100;
             s->mouse_resolution = 2;
             s->mouse_status = 0;
+            ps2_mouse_reset_rate_limit(s);
             ps2_queue(ps2, AUX_ACK);
             break;
         case AUX_RESET:
@@ -953,6 +1044,7 @@ void ps2_write_mouse(PS2MouseState *s, int val)
             s->mouse_resolution = 2;
             s->mouse_status = 0;
             s->mouse_type = 0;
+            ps2_mouse_reset_rate_limit(s);
             ps2_reset_queue(ps2);
             ps2_queue_3(ps2,
                 AUX_ACK,
@@ -970,6 +1062,7 @@ void ps2_write_mouse(PS2MouseState *s, int val)
         break;
     case AUX_SET_SAMPLE:
         s->mouse_sample_rate = val;
+        ps2_mouse_reset_rate_limit(s);
         /* detect IMPS/2 or IMEX */
         switch (s->mouse_detect_state) {
         default:
@@ -1091,6 +1184,7 @@ static void ps2_mouse_reset_hold(Object *obj, ResetType type)
     s->mouse_dz = 0;
     s->mouse_dw = 0;
     s->mouse_buttons = 0;
+    ps2_mouse_reset_rate_limit(s);
 }
 
 static const VMStateDescription vmstate_ps2_common = {
@@ -1210,6 +1304,17 @@ static int ps2_mouse_post_load(void *opaque, int version_id)
 
     ps2_common_post_load(ps2);
 
+    /*
+     * The rate limiting state is not migrated. Start over, and hand out any
+     * deltas that came in with the migration stream right away.
+     */
+    ps2_mouse_reset_rate_limit(s);
+    if ((s->mouse_status & MOUSE_STATUS_ENABLED) &&
+        !(s->mouse_status & MOUSE_STATUS_REMOTE) &&
+        ps2_mouse_has_deltas(s)) {
+        timer_mod_ns(s->mouse_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+
     return 0;
 }
 
@@ -1265,15 +1370,19 @@ static const QemuInputHandler ps2_mouse_handler = {
 static void ps2_mouse_realize(DeviceState *dev, Error **errp)
 {
     PS2State *s = PS2_DEVICE(dev);
+    PS2MouseState *ms = PS2_MOUSE_DEVICE(dev);
 
+    ms->mouse_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ps2_mouse_timer, ms);
     s->hs = qemu_input_handler_register(dev, &ps2_mouse_handler);
 }
 
 static void ps2_mouse_unrealize(DeviceState *dev)
 {
     PS2State *s = PS2_DEVICE(dev);
+    PS2MouseState *ms = PS2_MOUSE_DEVICE(dev);
 
     g_clear_pointer(&s->hs, qemu_input_handler_unregister);
+    g_clear_pointer(&ms->mouse_timer, timer_free);
 }
 
 static void ps2_kbd_class_init(ObjectClass *klass, const void *data)
