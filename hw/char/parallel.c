@@ -82,6 +82,66 @@ static void parallel_update_irq(ParallelState *s)
         qemu_irq_lower(s->irq);
 }
 
+static void parallel_tx_start(ParallelState *s);
+
+static gboolean parallel_tx_watch_cb(void *do_not_use, GIOCondition cond,
+                                     void *opaque)
+{
+    ParallelState *s = opaque;
+
+    s->tx_watch = 0;
+    parallel_tx_start(s);
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Hand the latched byte to the back end without blocking.
+ *
+ * A real printer that cannot accept data right now simply keeps BUSY
+ * asserted, and the host side of a parallel port has no way to stall the
+ * bus.  So when the back end is full we do the same: leave BUSY asserted,
+ * arm a watch and return.  The guest driver waits, as it would for a slow
+ * printer, and the vCPU thread stays free.
+ *
+ * This replaces a qemu_chr_fe_write_all() call that spun in
+ * qemu_chr_write_buffer() retrying on EAGAIN while holding the BQL, which
+ * froze the whole VM whenever the back end stopped draining -- a socket
+ * chardev whose peer is not reading, for instance.
+ */
+static void parallel_tx_start(ParallelState *s)
+{
+    int ret;
+
+    ret = qemu_chr_fe_write(&s->chr, &s->tx_data, 1);
+    if (ret != 1) {
+        if (ret >= 0 || errno == EAGAIN) {
+            s->tx_watch = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
+                                                parallel_tx_watch_cb, s);
+            if (s->tx_watch) {
+                /* Retry once the back end drains.  BUSY stays asserted. */
+                s->tx_pending = true;
+                return;
+            }
+        }
+        /*
+         * Nothing is attached, the back end is gone, or it cannot be
+         * watched.  Drop the byte, as before -- the wire goes nowhere.
+         */
+    }
+
+    if (s->tx_pending) {
+        s->tx_pending = false;
+        /*
+         * The acknowledge for this byte was withheld while the write was
+         * outstanding; deliver it now that the byte is really gone.
+         */
+        if (s->control & PARA_CTR_INTEN) {
+            s->irq_pending = 1;
+            parallel_update_irq(s);
+        }
+    }
+}
+
 static void
 parallel_ioport_write_sw(void *opaque, uint32_t addr, uint32_t val)
 {
@@ -105,12 +165,21 @@ parallel_ioport_write_sw(void *opaque, uint32_t addr, uint32_t val)
         else if (val & PARA_CTR_SELECT) {
             if (val & PARA_CTR_STROBE) {
                 s->status &= ~PARA_STS_BUSY;
-                if ((s->control & PARA_CTR_STROBE) == 0)
-                    /* XXX this blocks entire thread. Rewrite to use
-                     * qemu_chr_fe_write and background I/O callbacks */
-                    qemu_chr_fe_write_all(&s->chr, &s->dataw, 1);
+                if ((s->control & PARA_CTR_STROBE) == 0 && !s->tx_pending) {
+                    s->tx_data = s->dataw;
+                    parallel_tx_start(s);
+                }
+                /*
+                 * A strobe while tx_pending means the guest ignored BUSY.
+                 * Real hardware would lose that byte too, so drop it.
+                 */
             } else {
-                if (s->control & PARA_CTR_INTEN) {
+                /*
+                 * Acknowledge on the falling edge of STROBE, unless the byte
+                 * has not actually been written yet.  parallel_tx_start()
+                 * raises it in that case.
+                 */
+                if ((s->control & PARA_CTR_INTEN) && !s->tx_pending) {
                     s->irq_pending = 1;
                 }
             }
@@ -264,7 +333,13 @@ static uint32_t parallel_ioport_read_sw(void *opaque, uint32_t addr)
     case PARA_REG_STS:
         ret = s->status;
         s->irq_pending = 0;
-        if ((s->status & PARA_STS_BUSY) == 0 && (s->control & PARA_CTR_STROBE) == 0) {
+        /*
+         * Hold BUSY until the byte has actually reached the back end,
+         * otherwise the guest would push the next one into a full pipe.
+         */
+        if (!s->tx_pending &&
+            (s->status & PARA_STS_BUSY) == 0 &&
+            (s->control & PARA_CTR_STROBE) == 0) {
             /* XXX Fixme: wait 5 microseconds */
             if (s->status & PARA_STS_ACK)
                 s->status &= ~PARA_STS_ACK;
@@ -446,6 +521,13 @@ static void parallel_reset(void *opaque)
     s->hw_driver = 0;
     s->epp_timeout = 0;
     s->last_read_offset = ~0U;
+
+    if (s->tx_watch) {
+        g_source_remove(s->tx_watch);
+        s->tx_watch = 0;
+    }
+    s->tx_pending = false;
+    s->tx_data = ~0;
 }
 
 static const int isa_parallel_io[MAX_PARALLEL_PORTS] = { 0x378, 0x278, 0x3bc };
@@ -474,10 +556,43 @@ static const MemoryRegionPortio isa_parallel_portio_sw_list[] = {
 };
 
 
+static bool parallel_isa_tx_pending_needed(void *opaque)
+{
+    ISAParallelState *isa = opaque;
+
+    return isa->state.tx_pending;
+}
+
+static const VMStateDescription vmstate_parallel_isa_tx_pending = {
+    .name = "parallel_isa/tx_pending",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = parallel_isa_tx_pending_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(state.tx_pending, ISAParallelState),
+        VMSTATE_UINT8(state.tx_data, ISAParallelState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int parallel_isa_post_load(void *opaque, int version_id)
+{
+    ISAParallelState *isa = opaque;
+    ParallelState *s = &isa->state;
+
+    if (s->tx_pending) {
+        /* Re-arm the write that was still outstanding when we were saved. */
+        s->tx_pending = false;
+        parallel_tx_start(s);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_parallel_isa = {
     .name = "parallel_isa",
     .version_id = 1,
     .minimum_version_id = 1,
+    .post_load = parallel_isa_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(state.dataw, ISAParallelState),
         VMSTATE_UINT8(state.datar, ISAParallelState),
@@ -486,6 +601,10 @@ static const VMStateDescription vmstate_parallel_isa = {
         VMSTATE_INT32(state.irq_pending, ISAParallelState),
         VMSTATE_INT32(state.epp_timeout, ISAParallelState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_parallel_isa_tx_pending,
+        NULL
     }
 };
 

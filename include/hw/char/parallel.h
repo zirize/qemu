@@ -18,6 +18,14 @@ typedef struct ParallelState {
     CharFrontend chr;
     int hw_driver;
     int epp_timeout;
+    /*
+     * Byte latched on the rising edge of STROBE, waiting to be handed to the
+     * back end.  While tx_pending is set the port keeps BUSY asserted, so the
+     * guest is told to wait instead of the write blocking the vCPU thread.
+     */
+    uint8_t tx_data;
+    bool tx_pending;
+    guint tx_watch;
     uint32_t last_read_offset; /* For debugging */
     /* Memory-mapped interface */
     int it_shift;
