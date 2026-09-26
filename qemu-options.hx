@@ -2252,7 +2252,7 @@ DEF("display", HAS_ARG, QEMU_OPTION_display,
 #endif
 #if defined(CONFIG_SDL)
     "-display sdl[,gl=on|core|es|off][,grab-mod=<mod>][,show-cursor=on|off]\n"
-    "            [,window-close=on|off]\n"
+    "            [,window-close=on|off][,zoom-to-fit=on|off]\n"
     "            [,scaler=linear|nearest|integer|integerplus]\n"
 #endif
 #if defined(CONFIG_GTK)
@@ -2337,6 +2337,10 @@ SRST
         ``show-cursor=on|off`` :  Force showing the mouse cursor
 
         ``window-close=on|off`` : Allow to quit qemu with window close button
+
+        ``zoom-to-fit=on|off`` : Keep the window size when the guest
+        changes resolution instead of resizing the window to match it,
+        defaults to "off"
 
         ``scaler=linear|nearest|integer|integerplus`` : Filter used when
         the guest display is scaled to the window. ``linear`` (the default)

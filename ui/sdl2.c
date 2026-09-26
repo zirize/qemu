@@ -170,6 +170,11 @@ void sdl2_window_resize(struct sdl2_console *scon)
                       surface_height(scon->surface));
 }
 
+bool sdl2_zoom_to_fit(struct sdl2_console *scon)
+{
+    return scon->opts->u.sdl.has_zoom_to_fit && scon->opts->u.sdl.zoom_to_fit;
+}
+
 static void sdl2_redraw(struct sdl2_console *scon)
 {
     if (scon->opengl) {
