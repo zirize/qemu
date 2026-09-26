@@ -1498,10 +1498,16 @@
 # @grab-mod: Modifier keys that should be pressed together with the
 #     "G" key to release the mouse grab.
 #
+# @zoom-to-fit: Keep the window size when the guest changes
+#     resolution and scale the new resolution into it.  When turned
+#     off the window is resized to the new guest resolution.
+#     Defaults to "off".  (Since 11.1)
+#
 # Since: 7.1
 ##
 { 'struct'  : 'DisplaySDL',
-  'data'    : { '*grab-mod'   : 'HotKeyMod' } }
+  'data'    : { '*grab-mod'   : 'HotKeyMod',
+                '*zoom-to-fit': 'bool' } }
 
 ##
 # @DisplayType:
