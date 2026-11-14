@@ -564,6 +564,9 @@ static ssize_t sungem_receive(NetClientState *nc, const uint8_t *buf,
     struct gem_rxd desc;
     uint64_t dbase, baddr;
     unsigned int rx_cond;
+    uint8_t min_buf[ETH_ZLEN];
+    size_t min_len = sizeof(min_buf);
+    size_t orig_size = size;
 
     trace_sungem_rx_packet(size);
 
@@ -635,6 +638,12 @@ static ssize_t sungem_receive(NetClientState *nc, const uint8_t *buf,
     baddr = le64_to_cpu(desc.buffer) & ~7ull;
     baddr |= (rxdma_cfg & RXDMA_CFG_FBOFF) >> 10;
 
+    /* Pad short frames so guest drivers do not drop them as runts */
+    if (eth_pad_short_frame(min_buf, &min_len, buf, size)) {
+        buf = min_buf;
+        size = min_len;
+    }
+
     /* Write buffer out */
     pci_dma_write(d, baddr, buf, size);
 
@@ -676,7 +685,7 @@ static ssize_t sungem_receive(NetClientState *nc, const uint8_t *buf,
     }
     sungem_update_status(s, ints, true);
 
-    return size;
+    return orig_size;
 }
 
 static void sungem_set_link_status(NetClientState *nc)
