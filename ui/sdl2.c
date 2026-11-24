@@ -179,6 +179,7 @@ static void sdl_update_caption(struct sdl2_console *scon)
 {
     char win_title[1024];
     char icon_title[1024];
+    char scaler_status[64] = "";
     const char *status = "";
 
     if (!runstate_is_running()) {
@@ -201,12 +202,20 @@ static void sdl_update_caption(struct sdl2_console *scon)
         }
     }
 
+    if (!scon->opengl && scon->opts &&
+        scon->scaler != (scon->opts->has_scaler ? scon->opts->scaler
+                                                : DISPLAY_SCALER_LINEAR)) {
+        snprintf(scaler_status, sizeof(scaler_status), " [scaler: %s]",
+                 DisplayScaler_str(scon->scaler));
+    }
+
     if (qemu_name) {
-        snprintf(win_title, sizeof(win_title), "QEMU (%s-%d)%s", qemu_name,
-                 scon->idx, status);
+        snprintf(win_title, sizeof(win_title), "QEMU (%s-%d)%s%s", qemu_name,
+                 scon->idx, scaler_status, status);
         snprintf(icon_title, sizeof(icon_title), "QEMU (%s)", qemu_name);
     } else {
-        snprintf(win_title, sizeof(win_title), "QEMU%s", status);
+        snprintf(win_title, sizeof(win_title), "QEMU%s%s", scaler_status,
+                 status);
         snprintf(icon_title, sizeof(icon_title), "QEMU");
     }
 
@@ -432,6 +441,17 @@ static void handle_keydown(SDL_Event *ev)
             } else if (!gui_fullscreen) {
                 sdl_grab_end(scon);
             }
+            break;
+        case SDL_SCANCODE_S:
+            /* The scaler is only implemented by the 2D renderer. */
+            if (scon->opengl || !scon->surface) {
+                break;
+            }
+            scon->scaler = (scon->scaler + 1) % DISPLAY_SCALER__MAX;
+            /* re-create the texture with the new filter and redraw */
+            sdl2_2d_switch(&scon->dcl, scon->surface);
+            sdl_update_caption(scon);
+            scon->gui_keysym = true;
             break;
         case SDL_SCANCODE_0:
             sdl2_window_resize(scon);
@@ -916,6 +936,8 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         }
         sdl2_console[i].idx = i;
         sdl2_console[i].opts = o;
+        sdl2_console[i].scaler = o->has_scaler ? o->scaler
+                                               : DISPLAY_SCALER_LINEAR;
 #ifdef CONFIG_OPENGL
         sdl2_console[i].opengl = display_opengl;
         sdl2_console[i].dcl.ops = display_opengl ? &dcl_gl_ops : &dcl_2d_ops;

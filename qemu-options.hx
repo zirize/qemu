@@ -2218,7 +2218,8 @@ SRST
         unevenly sized guest pixels; ``integer`` scales by a whole number
         only and letterboxes the rest; ``integerplus`` scales by a whole
         number first and then stretches the remainder, filling the window
-        while staying sharper than ``linear``.
+        while staying sharper than ``linear``. Ctrl+Alt+S cycles through
+        the modes at run time.
 
     ``gtk``
         Display video output in a GTK window. This interface provides
