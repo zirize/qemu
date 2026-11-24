@@ -2259,7 +2259,6 @@ DEF("display", HAS_ARG, QEMU_OPTION_display,
     "-display gtk[,clipboard=on|off][,full-screen=on|off][,gl=on|off]\n"
     "            [,grab-on-hover=on|off][,show-tabs=on|off][,show-cursor=on|off]\n"
     "            [,window-close=on|off][,show-menubar=on|off][,zoom-to-fit=on|off]\n"
-    "            [,scaler=linear|nearest|integer|integerplus]\n"
 #endif
 #if defined(CONFIG_VNC)
     "-display vnc=<display>[,<optargs>]\n"
