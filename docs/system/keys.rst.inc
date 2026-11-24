@@ -24,6 +24,10 @@ while ``-display sdl,grab-mod=rctrl`` changes it to the right :kbd:`Ctrl` key.
   * - :kbd:`Ctrl+Alt+0`
     - Restore the screen's un-scaled dimensions
 
+  * - :kbd:`Ctrl+Alt+s`
+    - Cycle the display scaler (linear, nearest, integer, integerplus).
+      SDL 2D rendering only.
+
   * - :kbd:`Ctrl+Alt+n`
     - Switch to virtual console 'n'. Standard console mappings are:
 

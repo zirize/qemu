@@ -30,10 +30,7 @@
 
 static DisplayScaler sdl2_2d_scaler(struct sdl2_console *scon)
 {
-    if (scon->opts->has_scaler) {
-        return scon->opts->scaler;
-    }
-    return DISPLAY_SCALER_LINEAR;
+    return scon->scaler;
 }
 
 /*

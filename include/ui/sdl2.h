@@ -31,6 +31,8 @@ struct sdl2_console {
     DisplayChangeListener dcl;
     DisplaySurface *surface;
     DisplayOptions *opts;
+    /* current scaler; starts from opts->scaler, Ctrl+Alt+S cycles it */
+    DisplayScaler scaler;
     SDL_Texture *texture;
     /* intermediate render target used by DISPLAY_SCALER_INTEGERPLUS */
     SDL_Texture *scaler_target;
